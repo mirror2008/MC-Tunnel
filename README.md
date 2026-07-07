@@ -84,4 +84,4 @@ deploy/install.sh 服务端一键安装
 
 ## 许可
 
-MIT
+GPL-3.0 license
