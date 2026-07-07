@@ -41,33 +41,22 @@ if (-not (Test-Path $configDst)) {
     Copy-Item -Force (Join-Path $root "config\mc-tunnel-config.example.json") $configDst
 }
 
-@'
-@echo off
-chcp 65001 >nul
-where dotnet >nul 2>&1
-if errorlevel 1 (
-  echo 未检测到 .NET 运行时。请安装 .NET 9 Desktop Runtime:
-  echo https://dotnet.microsoft.com/download/dotnet/9.0
-  pause
-  exit /b 1
-)
-start "" "%~dp0mc-tunnel-gui.exe"
-'@ | Set-Content -Path (Join-Path $release "启动.bat") -Encoding ASCII
+# 清理旧版中文文件名（zip 内易乱码）
+Get-ChildItem $release -File | Where-Object { $_.Extension -in '.bat','.txt' -and $_.Name -notmatch '^[A-Za-z0-9._-]+$' } | Remove-Item -Force -ErrorAction SilentlyContinue
 
-Set-Content -Path (Join-Path $release "使用说明.txt") -Encoding UTF8 -Value @"
-MC-Tunnel Windows 客户端
+$readme = @"
+MC-Tunnel Windows Client
 ========================
 
-1. 安装 .NET 9 Desktop Runtime（仅首次）
+1. Install .NET 9 Desktop Runtime (first time only):
    https://dotnet.microsoft.com/download/dotnet/9.0
-2. 打开雷神 → 加速 Minecraft
-3. 双击 启动.bat 或 mc-tunnel-gui.exe
-4. 填写 VPS 地址（IP:端口），配置自动保存
+2. Start Leigod accelerator for Minecraft
+3. Run mc-tunnel-gui.exe
+4. Enter VPS address (IP:port); settings save to mc-tunnel-config.json
 
-免安装大包: 在源码目录运行 build-release.ps1 -SelfContained（较慢）
-
-许可: GPL-3.0
+License: GPL-3.0
 "@
+[System.IO.File]::WriteAllText((Join-Path $release "README.txt"), $readme, [System.Text.UTF8Encoding]::new($true))
 
 $zip = Join-Path $root "MC-Tunnel-Windows-x64.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
@@ -76,4 +65,4 @@ Compress-Archive -Path "$release\*" -DestinationPath $zip -Force
 
 Write-Host ""
 Write-Host "完成! dist\  压缩包: $zip"
-Write-Host "启动: $release\启动.bat"
+Write-Host "启动: $release\mc-tunnel-gui.exe"

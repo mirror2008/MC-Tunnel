@@ -32,7 +32,7 @@ journalctl -u mc-tunnel -f
 
 ## Windows 客户端（下载即用）
 
-从 [Releases](https://github.com/mirror2008/MC-Tunnel/releases) 下载 **`MC-Tunnel-Windows-x64.zip`**，解压后双击 **`启动.bat`** 或 `mc-tunnel-gui.exe`。
+从 [Releases](https://github.com/mirror2008/MC-Tunnel/releases) 下载 **`MC-Tunnel-Windows-x64.zip`**，解压后运行 **`mc-tunnel-gui.exe`**。
 
 首次使用需安装 [.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0)（约 50MB，一次安装）。
 
