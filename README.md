@@ -1,7 +1,7 @@
 # MC-Tunnel
 
 Minecraft 流量伪装代理隧道。客户端经雷神 MC 通道连接 VPS，提供 SOCKS5 / HTTP 代理与 GeoIP 分流。
-
+声明:本项目仅供学习交流参考 严禁用于非法用途 可用性取决于您当地法律法规 作者不承担任何后果 请谨慎使用。
 ## 功能
 
 - MC 握手伪装，隧道多路复用
@@ -54,7 +54,7 @@ powershell -ExecutionPolicy Bypass -File build-release.ps1 -SelfContained
 
 ### 使用
 
-1. 打开雷神加速器，加速 **Minecraft**
+1. 打开任意加速器，加速 **Minecraft**
 2. 运行 `mc-tunnel-gui.exe`
 3. 填写 MC 服务器地址（例：`你的VPS IP:25565`），连接后自动保存配置
 4. 选择分流模式并连接
@@ -93,3 +93,4 @@ deploy/install.sh 服务端一键安装
 ## 许可
 
 本项目采用 [GNU General Public License v3.0](LICENSE)（GPL-3.0）。
+
