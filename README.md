@@ -1,11 +1,11 @@
 # MC-Tunnel
 
-Minecraft 流量伪装代理隧道。客户端经雷神 MC 通道连接 VPS，提供 SOCKS5 / HTTP 代理与 GeoIP 分流。
+Minecraft 流量伪装代理隧道。客户端经加速器 MC 通道连接 VPS，提供 SOCKS5 / HTTP 代理与 GeoIP 分流。
 声明:本项目仅供学习交流参考 严禁用于非法用途 可用性取决于您当地法律法规 作者不承担任何后果 请谨慎使用。
 ## 功能
 
 - MC 握手伪装，隧道多路复用
-- 强制经雷神 `javaw` 中继（禁止直连 VPS）
+- 强制经加速器 `javaw` 中继（禁止直连 VPS）
 - 三档分流：全部代理 / 仅国外 IP / 全部直连
 - 内置 GeoIP 数据库（启动不联网下载）
 - Windows .NET 9 图形客户端
@@ -85,7 +85,7 @@ powershell -ExecutionPolicy Bypass -File build-release.ps1 -SelfContained
 ```
 src/              Rust 核心
 MC-Tunnel.Gui/    Windows GUI
-bridge/           雷神 javaw 中继
+bridge/           加速器 javaw 中继
 data/             内置 GeoIP 数据库
 deploy/install.sh 服务端一键安装
 ```
