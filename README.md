@@ -30,19 +30,27 @@ systemctl restart mc-tunnel
 journalctl -u mc-tunnel -f
 ```
 
-## Windows 客户端
+## Windows 客户端（下载即用）
 
-### 编译
+从 [Releases](https://github.com/mirror2008/MC-Tunnel/releases) 下载 **`MC-Tunnel-Windows-x64.zip`**，解压后双击 **`启动.bat`** 或 `mc-tunnel-gui.exe`。
+
+首次使用需安装 [.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0)（约 50MB，一次安装）。
+
+包内包含：`mc-tunnel.exe`、`mc-tunnel-gui.exe`、`data/Country.mmdb`、`bridge/`。
+
+### 自行编译
 
 ```powershell
-# Rust 后端
-cargo build --release --bin mc-tunnel
-
-# GUI（需 .NET 9 SDK）
-powershell -ExecutionPolicy Bypass -File build-gui.ps1
+powershell -ExecutionPolicy Bypass -File build-release.ps1
 ```
 
-发布文件在 `release/` 目录：`mc-tunnel.exe`、`mc-tunnel-gui.exe`、`data/Country.mmdb`。
+输出目录 `dist/`，可打包为 zip 分发。
+
+需要免安装版（内置 .NET，体积大、编译慢约 3 分钟）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build-release.ps1 -SelfContained
+```
 
 ### 使用
 
@@ -84,4 +92,4 @@ deploy/install.sh 服务端一键安装
 
 ## 许可
 
-GPL-3.0 license
+本项目采用 [GNU General Public License v3.0](LICENSE)（GPL-3.0）。

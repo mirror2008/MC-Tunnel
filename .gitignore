@@ -1,7 +1,7 @@
 /target/
-/release/
-/release-staging/
-/release-staging2/
+/dist/
+/release-build/
+MC-Tunnel-Windows-x64.zip
 **/*.exe
 **/*.dll
 **/*.pdb

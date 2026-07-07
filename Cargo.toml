@@ -3,6 +3,7 @@ name = "mc-tunnel"
 version = "0.1.0"
 edition = "2021"
 description = "Minecraft traffic camouflage proxy tunnel"
+license = "GPL-3.0-or-later"
 
 [lib]
 name = "mc_tunnel"

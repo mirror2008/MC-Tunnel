@@ -7,7 +7,7 @@ $release = Join-Path $root "release"
 Get-Process mc-tunnel-gui -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 800
 
-dotnet publish $gui -c Release -r win-x64 --self-contained false -o $release /p:PublishSingleFile=false
+dotnet publish $gui -c Release -r win-x64 --self-contained true -o $release /p:PublishSingleFile=false
 
 # 确保后端与 GUI 同目录
 $tunnelSrc = Join-Path $release "mc-tunnel.exe"
