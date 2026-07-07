@@ -1,0 +1,8 @@
+{
+  "remote": "",
+  "local_proxy": "127.0.0.1:1080",
+  "speed": "fast",
+  "proxy_mode": "gfw_only",
+  "set_system_proxy": true,
+  "whitelist": []
+}
