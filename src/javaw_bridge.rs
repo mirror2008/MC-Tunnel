@@ -8,7 +8,10 @@ use tokio::time::sleep;
 
 pub const DEFAULT_BRIDGE_PORT: u16 = 25566;
 
-pub struct LeigodBridge {
+/// Windows 上常见 MC 加速客户端进程名（用于检测是否已开启游戏加速）
+const ACCEL_PROCESS: &str = "leigod.exe";
+
+pub struct JavawBridge {
     child: Child,
     pub local_addr: String,
 }
@@ -18,17 +21,18 @@ struct BridgeLaunch {
     class_dir: PathBuf,
 }
 
-impl LeigodBridge {
-    /// 确认雷神加速器正在运行
-    pub fn ensure_leigod_running() -> anyhow::Result<()> {
+impl JavawBridge {
+    /// 确认游戏加速器客户端正在运行
+    pub fn ensure_accelerator_running() -> anyhow::Result<()> {
+        let filter = format!("IMAGENAME eq {ACCEL_PROCESS}");
         let out = Command::new("tasklist")
-            .args(["/FI", "IMAGENAME eq leigod.exe", "/NH"])
+            .args(["/FI", &filter, "/NH"])
             .output()
-            .context("无法检测雷神进程")?;
+            .context("无法检测加速客户端进程")?;
         let text = String::from_utf8_lossy(&out.stdout);
-        if !text.to_ascii_lowercase().contains("leigod.exe") {
+        if !text.to_ascii_lowercase().contains(ACCEL_PROCESS) {
             anyhow::bail!(
-                "未检测到雷神加速器 (leigod.exe)。\n请先打开雷神 → 选择 Minecraft → 开启加速后再连接"
+                "未检测到游戏加速器。\n请先打开加速器 → 选择 Minecraft → 开启加速后再连接"
             );
         }
         Ok(())
@@ -39,15 +43,18 @@ impl LeigodBridge {
         let (host, port) = parse_host_port(remote, 25565);
         let launch = prepare_bridge_launch()?;
 
+        free_bridge_port(bridge_port);
+        sleep(Duration::from_millis(400)).await;
+
         let listen_host = "127.0.0.1";
         tracing::info!(
-            "启动 javaw 雷神中继 {listen_host}:{bridge_port} → {host}:{port}"
+            "启动 javaw 中继 {listen_host}:{bridge_port} → {host}:{port}"
         );
 
         let child = Command::new(&launch.javaw)
             .arg("-cp")
             .arg(&launch.class_dir)
-            .arg("McLeigodBridge")
+            .arg("McJavawBridge")
             .args([
                 listen_host,
                 &bridge_port.to_string(),
@@ -64,12 +71,12 @@ impl LeigodBridge {
         wait_for_port(listen_host, bridge_port, Duration::from_secs(15)).await
             .with_context(|| format!("javaw 中继未在 {local_addr} 就绪"))?;
 
-        tracing::info!("javaw 中继已就绪（进程名 javaw.exe，可走雷神 MC 通道）");
+        tracing::info!("javaw 中继已就绪（进程 javaw.exe，可走 MC 加速通道）");
         Ok(Self { child, local_addr })
     }
 }
 
-impl Drop for LeigodBridge {
+impl Drop for JavawBridge {
     fn drop(&mut self) {
         let _ = self.child.kill();
     }
@@ -78,9 +85,10 @@ impl Drop for LeigodBridge {
 async fn wait_for_port(host: &str, port: u16, timeout_dur: Duration) -> anyhow::Result<()> {
     let deadline = tokio::time::Instant::now() + timeout_dur;
     loop {
-        // 端口已被 bridge 占用 = 监听就绪（勿用 connect 探测，会多开一条中继连接）
         if TcpListener::bind((host, port)).await.is_err() {
-            return Ok(());
+            if tokio::net::TcpStream::connect((host, port)).await.is_ok() {
+                return Ok(());
+            }
         }
         if tokio::time::Instant::now() >= deadline {
             anyhow::bail!("等待端口 {host}:{port} 超时");
@@ -88,6 +96,22 @@ async fn wait_for_port(host: &str, port: u16, timeout_dur: Duration) -> anyhow::
         sleep(Duration::from_millis(200)).await;
     }
 }
+
+#[cfg(windows)]
+fn free_bridge_port(port: u16) {
+    let script = format!(
+        "Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | \
+         ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }}"
+    );
+    let _ = Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(not(windows))]
+fn free_bridge_port(_port: u16) {}
 
 fn find_javaw() -> anyhow::Result<PathBuf> {
     if let Ok(p) = which_javaw_via_path() {
@@ -127,10 +151,10 @@ fn which_javaw_via_path() -> anyhow::Result<PathBuf> {
 
 fn prepare_bridge_launch() -> anyhow::Result<BridgeLaunch> {
     let class_dir = find_bridge_class_dir()?;
-    let class_file = class_dir.join("McLeigodBridge.class");
+    let class_file = class_dir.join("McJavawBridge.class");
     if !class_file.exists() {
         anyhow::bail!(
-            "找不到 McLeigodBridge.class，请运行 bridge 目录下的 javac McLeigodBridge.java"
+            "找不到 McJavawBridge.class，请运行 bridge 目录下的 javac McJavawBridge.java"
         );
     }
     Ok(BridgeLaunch {
@@ -148,11 +172,11 @@ fn find_bridge_class_dir() -> anyhow::Result<PathBuf> {
         PathBuf::from("bridge"),
         PathBuf::from("release").join("bridge"),
     ] {
-        if candidate.join("McLeigodBridge.class").exists() {
+        if candidate.join("McJavawBridge.class").exists() {
             return Ok(candidate);
         }
     }
-    anyhow::bail!("找不到 bridge/McLeigodBridge.class")
+    anyhow::bail!("找不到 bridge/McJavawBridge.class")
 }
 
 fn parse_host_port(addr: &str, default_port: u16) -> (String, u16) {

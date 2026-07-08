@@ -1,0 +1,11 @@
+# 部署前修改 name 和 routes
+name = "mc-tunnel-http-proxy"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+# 把你的域名子域绑到这里，例如 mc-proxy.example.com
+# routes = [{ pattern = "mc-proxy.example.com/*", zone_name = "example.com" }]
+
+# 可选：在控制台设置 PROXY_TOKEN 作为密钥
+# [vars]
+# PROXY_TOKEN = "改成随机长字符串"

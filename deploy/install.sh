@@ -24,8 +24,8 @@ if [[ -f "$CONFIG" ]]; then
   SAVED_PORT="${LISTEN_PORT:-}"
 fi
 
-DEFAULT_PORT="${SAVED_PORT:-25565}"
-read -r -p "MC-Tunnel 监听端口 [${DEFAULT_PORT}]: " INPUT_PORT
+DEFAULT_PORT="${SAVED_PORT:-25568}"
+read -r -p "MC-Tunnel 监听端口 [${DEFAULT_PORT}]（避免 25565 被墙可换 25568/4433）: " INPUT_PORT
 LISTEN_PORT="${INPUT_PORT:-$DEFAULT_PORT}"
 
 if ! [[ "$LISTEN_PORT" =~ ^[0-9]+$ ]] || [[ "$LISTEN_PORT" -lt 1 || "$LISTEN_PORT" -gt 65535 ]]; then

@@ -18,7 +18,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     [ObservableProperty] private string _remote = "";
     [ObservableProperty] private string _localProxy = "";
-    [ObservableProperty] private SpeedMode _speed = SpeedMode.Fast;
+    [ObservableProperty] private SpeedMode _speed = SpeedMode.Turbo;
     [ObservableProperty] private ProxyMode _proxyMode = ProxyMode.GfwOnly;
     [ObservableProperty] private bool _setSystemProxy = true;
     [ObservableProperty] private ConnectionStatus _status = ConnectionStatus.Disconnected;
@@ -62,13 +62,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _pollTimer.Start();
 
         LoadConfig();
+        AddLog($"配置: {_configService.ConfigPath}");
         var tunnel = TunnelExeLocator.FindTunnelExe();
         if (File.Exists(tunnel))
             AddLog($"后端: {tunnel}");
         else
             AddLog($"警告: 找不到 mc-tunnel.exe，请将 GUI 放在 release 目录运行");
-        AddLog("就绪。请先启动雷神 → 加速 Minecraft，再点连接");
-        AddLog("隧道强制经 javaw/雷神通道，禁止直连 VPS");
+        AddLog("就绪。请先打开加速器 → 加速 Minecraft，再点连接");
+        AddLog("隧道强制经 javaw MC 加速通道，禁止直连 VPS");
         UpdateModeDescription();
     }
 
@@ -190,6 +191,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
         };
     }
 
+    private DateTimeOffset? _connectStartedAt;
+
     [RelayCommand(CanExecute = nameof(CanConnect))]
     private void Connect()
     {
@@ -204,6 +207,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         SaveConfig();
         Status = ConnectionStatus.Connecting;
+        _connectStartedAt = DateTimeOffset.UtcNow;
         AddLog($"正在连接 {Remote}（{ProxyModeLabel(ProxyMode)}）...");
 
         if (!_tunnel.Start(BuildConfig(), _configService.ConfigPath))
@@ -261,7 +265,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
             if (!_tunnel.IsRunning || !TunnelProcessService.IsProxyPortOpen())
             {
                 Status = ConnectionStatus.Disconnected;
-                AddLog("代理端口已关闭，连接已失效（请断开后重连）");
+                AddLog("代理端口已关闭，连接已失效");
+                TryAutoReconnect();
             }
             else
             {
@@ -273,32 +278,60 @@ public partial class MainViewModel : ObservableObject, IDisposable
         if (Status != ConnectionStatus.Connecting)
             return;
 
+        if (_connectStartedAt is { } started &&
+            DateTimeOffset.UtcNow - started > TimeSpan.FromSeconds(210) &&
+            !_logBuffer.Any(l => l.Contains("隧道已建立")))
+        {
+            Status = ConnectionStatus.Disconnected;
+            _connectStartedAt = null;
+            AddLog("连接超时：VPS 服务端未响应 MC 握手，请检查服务器");
+            return;
+        }
+
         var tunnelUp = _logBuffer.Any(l => l.Contains("隧道已建立"));
         var portOpen = TunnelProcessService.IsProxyPortOpen();
 
         if (tunnelUp && portOpen)
         {
             Status = ConnectionStatus.Connected;
+            _connectStartedAt = null;
+            _lastTrafficTotal = 0;
+            _hadTraffic = false;
+            _lastTrafficChange = DateTimeOffset.UtcNow;
             AddLog("连接成功");
             return;
         }
 
+        // 仅在最终失败时判定断开（重试中的 WARN 不算失败）
         if (_logBuffer.Any(l =>
                 l.Contains("[错误]") ||
                 l.Contains("绑定 SOCKS5 端口失败") ||
                 l.Contains("os error 10048") ||
-                l.Contains("无法经雷神通道")))
+                l.Contains("无法经 MC 加速通道") ||
+                l.Contains("未检测到游戏加速器")))
         {
             Status = ConnectionStatus.Disconnected;
+            _connectStartedAt = null;
+            if (!_logBuffer.Any(l => l.Contains("连接失败")))
+            {
+                var viaAccel = _logBuffer.Any(l => l.Contains("无法经 MC 加速通道"));
+                AddLog(viaAccel
+                    ? "连接失败：MC 加速通道未建立。请确认已加速 Minecraft，可切换加速器路由模式后重试"
+                    : "连接失败：请检查服务端是否在运行（mc-tunnel probe --remote 地址）");
+            }
         }
     }
 
     private void OnLog(string line)
     {
+        line = StripAnsi(line);
         var app = System.Windows.Application.Current;
         if (app is null) return;
         app.Dispatcher.BeginInvoke(() => AddLog(line));
     }
+
+    private static string StripAnsi(string s) =>
+        System.Text.RegularExpressions.Regex.Replace(s, "\x1b\\[[0-9;]*m", "");
 
     private void OnProcessExited()
     {
@@ -310,11 +343,46 @@ public partial class MainViewModel : ObservableObject, IDisposable
             {
                 Status = ConnectionStatus.Disconnected;
                 AddLog("隧道进程已退出");
+                TryAutoReconnect();
             }
         });
     }
 
+    private void TryAutoReconnect()
+    {
+        if (Interlocked.CompareExchange(ref _autoReconnecting, 1, 0) != 0)
+            return;
+
+        if (DateTimeOffset.UtcNow - _lastAutoReconnect < TimeSpan.FromSeconds(20))
+        {
+            Interlocked.Exchange(ref _autoReconnecting, 0);
+            return;
+        }
+
+        _lastAutoReconnect = DateTimeOffset.UtcNow;
+        AddLog("正在自动重连…");
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(1500).ConfigureAwait(false);
+            var app = System.Windows.Application.Current;
+            app?.Dispatcher.BeginInvoke(() =>
+            {
+                Interlocked.Exchange(ref _autoReconnecting, 0);
+                if (Status is ConnectionStatus.Connecting or ConnectionStatus.Connected)
+                    return;
+                _tunnel.Stop();
+                Connect();
+            });
+        });
+    }
+
     private int _trafficPollRunning;
+    private int _autoReconnecting;
+    private DateTimeOffset _lastAutoReconnect = DateTimeOffset.MinValue;
+    private long _lastTrafficTotal;
+    private DateTimeOffset _lastTrafficChange = DateTimeOffset.UtcNow;
+    private bool _hadTraffic;
 
     private async Task PollTrafficAsync()
     {
@@ -327,7 +395,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 return;
 
             var stats = await _trafficStats.FetchAsync().ConfigureAwait(false);
-            if (stats is null || Status != ConnectionStatus.Connected)
+            if (stats is null)
+            {
+                var app0 = System.Windows.Application.Current;
+                app0?.Dispatcher.BeginInvoke(() =>
+                {
+                    if (Status != ConnectionStatus.Connected) return;
+                    Status = ConnectionStatus.Disconnected;
+                    AddLog("隧道无响应，正在重连…");
+                    TryAutoReconnect();
+                });
+                return;
+            }
+            if (Status != ConnectionStatus.Connected)
                 return;
 
             var app = System.Windows.Application.Current;
@@ -339,6 +419,28 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 DownloadSpeed = TrafficStatsService.FormatSpeed(stats.DownBps);
                 UploadTotal = TrafficStatsService.FormatTotal(stats.UpTotal);
                 DownloadTotal = TrafficStatsService.FormatTotal(stats.DownTotal);
+                if (!stats.TunnelAlive)
+                {
+                    Status = ConnectionStatus.Disconnected;
+                    AddLog("隧道已断开（MC 加速通道或 NAT 断连）");
+                    TryAutoReconnect();
+                    return;
+                }
+
+                var total = stats.UpTotal + stats.DownTotal;
+                if (total > _lastTrafficTotal)
+                {
+                    _lastTrafficTotal = total;
+                    _lastTrafficChange = DateTimeOffset.UtcNow;
+                    _hadTraffic = true;
+                }
+                else if (_hadTraffic &&
+                         DateTimeOffset.UtcNow - _lastTrafficChange > TimeSpan.FromSeconds(15))
+                {
+                    Status = ConnectionStatus.Disconnected;
+                    AddLog("隧道卡住（长时间无流量），正在重连…");
+                    TryAutoReconnect();
+                }
             });
         }
         finally
@@ -373,6 +475,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
         ProxyMode.Direct => "全部直连",
         _ => mode.ToString(),
     };
+
+    public void SaveAllSettings() => SaveConfig();
 
     public void Dispose()
     {

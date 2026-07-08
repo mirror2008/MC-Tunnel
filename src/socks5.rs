@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -13,7 +15,7 @@ use crate::camouflage::{
 use crate::geoip::GeoRouter;
 use crate::gfw::host_from_dest;
 use crate::routing::ProxyPolicy;
-use crate::speed::{self, SpeedMode};
+use crate::speed::{self, SpeedMode, IO_BUF};
 use crate::traffic::TrafficCounter;
 use crate::tunnel::{
     spawn_client_keepalive, spawn_server_noise, TunnelReader, TunnelWriter,
@@ -48,6 +50,7 @@ pub struct TunnelMux {
     writer: TunnelWriterHandle,
     routes: Arc<Mutex<HashMap<u32, mpsc::UnboundedSender<Vec<u8>>>>>,
     next_id: std::sync::atomic::AtomicU32,
+    alive: Arc<AtomicBool>,
 }
 
 impl TunnelMux {
@@ -56,11 +59,13 @@ impl TunnelMux {
     }
 
     pub fn from_shared(writer: TunnelWriterHandle, reader: TunnelReader) -> Self {
+        let alive = writer.alive_flag();
         let routes: Arc<Mutex<HashMap<u32, mpsc::UnboundedSender<Vec<u8>>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let routes_dispatch = routes.clone();
         let writer_for_dispatch = writer.clone();
         let reader = Arc::new(Mutex::new(reader));
+        let alive_watch = alive.clone();
 
         tokio::spawn(async move {
             loop {
@@ -69,7 +74,10 @@ impl TunnelMux {
                     r.recv_with_response(&writer_for_dispatch).await
                 };
                 match data {
-                    Ok(d) if d.is_empty() => break,
+                    Ok(d) if d.is_empty() => {
+                        tracing::warn!("隧道 TCP 已关闭");
+                        break;
+                    }
                     Ok(d) => {
                         if let Ok((msg_type, conn_id, payload)) = decode_msg(&d) {
                             let mut out = vec![msg_type];
@@ -80,16 +88,29 @@ impl TunnelMux {
                             }
                         }
                     }
-                    Err(_) => break,
+                    Err(e) => {
+                        tracing::warn!("隧道读取失败: {e:#}");
+                        break;
+                    }
                 }
             }
+            alive_watch.store(false, Ordering::Release);
         });
 
         Self {
             writer,
             routes,
             next_id: std::sync::atomic::AtomicU32::new(1),
+            alive,
         }
+    }
+
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Acquire)
+    }
+
+    pub fn alive_flag(&self) -> Arc<AtomicBool> {
+        self.alive.clone()
     }
 
     pub fn alloc_id(&self) -> u32 {
@@ -108,6 +129,9 @@ impl TunnelMux {
     }
 
     pub async fn send(&self, msg_type: u8, conn_id: u32, payload: &[u8]) -> anyhow::Result<()> {
+        if !self.is_alive() {
+            anyhow::bail!("隧道已断开");
+        }
         let data = encode_msg(msg_type, conn_id, payload);
         self.writer.send(&data).await
     }
@@ -206,11 +230,11 @@ async fn handle_http_inner(
         let host = host_from_dest(dest);
         if geo.should_proxy(host, policy).await {
             tracing::debug!("HTTP CONNECT [代理] -> {dest}");
-            let (conn_id, mut rx) = tunnel_connect(mux, dest).await?;
+            let (conn_id, rx) = tunnel_connect(mux, dest).await?;
             client
                 .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 .await?;
-            let r = relay_bidirectional(client, mux.clone(), conn_id, &mut rx, traffic.clone()).await;
+            let r = relay_bidirectional(client, mux.clone(), conn_id, rx, traffic.clone()).await;
             mux.unregister(conn_id).await;
             return r;
         }
@@ -313,11 +337,11 @@ async fn handle_socks5_inner(
 
     if geo.should_proxy(host, &policy).await {
         tracing::debug!("SOCKS5 [代理] -> {dest}");
-        let (conn_id, mut rx) = tunnel_connect(&mux, &dest).await?;
+        let (conn_id, rx) = tunnel_connect(&mux, &dest).await?;
         client
             .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
             .await?;
-        let r = relay_bidirectional(client, mux.clone(), conn_id, &mut rx, traffic.clone()).await;
+        let r = relay_bidirectional(client, mux.clone(), conn_id, rx, traffic.clone()).await;
         mux.unregister(conn_id).await;
         return r;
     }
@@ -345,7 +369,7 @@ async fn relay_direct_bidirectional(
     let traffic_down = traffic;
 
     let up = async move {
-        let mut buf = vec![0u8; 262_144];
+        let mut buf = vec![0u8; IO_BUF];
         loop {
             let n = cr.read(&mut buf).await?;
             if n == 0 {
@@ -358,7 +382,7 @@ async fn relay_direct_bidirectional(
     };
 
     let down = async move {
-        let mut buf = vec![0u8; 262_144];
+        let mut buf = vec![0u8; IO_BUF];
         loop {
             let n = rr.read(&mut buf).await?;
             if n == 0 {
@@ -377,52 +401,70 @@ async fn relay_direct_bidirectional(
     Ok(())
 }
 
+async fn relay_upload(
+    mut cr: tokio::net::tcp::ReadHalf<'_>,
+    mux: Arc<TunnelMux>,
+    conn_id: u32,
+    traffic: Arc<TrafficCounter>,
+) -> anyhow::Result<()> {
+    use std::io::ErrorKind;
+    let mut buf = vec![0u8; IO_BUF];
+    loop {
+        let mut end = match cr.read(&mut buf).await {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) => return Err(e.into()),
+        };
+        while end < IO_BUF * 9 / 10 {
+            match cr.try_read(&mut buf[end..]) {
+                Ok(0) => break,
+                Ok(n2) => end += n2,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        traffic.add_up(end);
+        mux.send(MSG_DATA, conn_id, &buf[..end]).await?;
+    }
+    let _ = mux.send(MSG_CLOSE, conn_id, &[]).await;
+    Ok(())
+}
+
+async fn relay_download(
+    mut cw: tokio::net::tcp::WriteHalf<'_>,
+    mut route_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    traffic: Arc<TrafficCounter>,
+) -> anyhow::Result<()> {
+    loop {
+        let msg = route_recv(&mut route_rx).await?;
+        match msg[0] {
+            MSG_DATA => {
+                let payload = &msg[1..];
+                traffic.add_down(payload.len());
+                cw.write_all(payload).await?;
+            }
+            MSG_CLOSE => break,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 async fn relay_bidirectional(
     client: &mut TcpStream,
     mux: Arc<TunnelMux>,
     conn_id: u32,
-    route_rx: &mut mpsc::UnboundedReceiver<Vec<u8>>,
+    route_rx: mpsc::UnboundedReceiver<Vec<u8>>,
     traffic: Arc<TrafficCounter>,
 ) -> anyhow::Result<()> {
-    use std::io::ErrorKind;
-
-    let (mut cr, mut cw) = client.split();
-    let mut buf = vec![0u8; 262_144];
-
-    loop {
-        tokio::select! {
-            biased;
-            read_res = cr.read(&mut buf) => {
-                let mut end = read_res?;
-                if end == 0 {
-                    let _ = mux.send(MSG_CLOSE, conn_id, &[]).await;
-                    break;
-                }
-                while end < 240_000 {
-                    match cr.try_read(&mut buf[end..]) {
-                        Ok(0) => break,
-                        Ok(n2) => end += n2,
-                        Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                        Err(e) => return Err(e.into()),
-                    }
-                }
-                traffic.add_up(end);
-                mux.send(MSG_DATA, conn_id, &buf[..end]).await?;
-            }
-            msg = route_recv(route_rx) => {
-                let resp = msg?;
-                match resp[0] {
-                    MSG_DATA => {
-                        let n = resp[1..].len();
-                        traffic.add_down(n);
-                        cw.write_all(&resp[1..]).await?;
-                    }
-                    MSG_CLOSE => break,
-                    _ => {}
-                }
-            }
-        }
-    }
+    let (cr, cw) = client.split();
+    let mux_up = mux.clone();
+    let traffic_up = traffic.clone();
+    let traffic_down = traffic;
+    tokio::try_join!(
+        relay_upload(cr, mux_up, conn_id, traffic_up),
+        relay_download(cw, route_rx, traffic_down),
+    )?;
     Ok(())
 }
 
@@ -492,6 +534,15 @@ pub async fn accept_tunnel(
     speed: SpeedMode,
 ) -> anyhow::Result<(TunnelWriter, TunnelReader)> {
     let (stream, addr) = listener.accept().await?;
+    accept_tunnel_stream(stream, addr, speed).await
+}
+
+/// 单连接握手（在独立 task 中调用，避免阻塞 accept 循环）
+pub async fn accept_tunnel_stream(
+    stream: TcpStream,
+    addr: SocketAddr,
+    speed: SpeedMode,
+) -> anyhow::Result<(TunnelWriter, TunnelReader)> {
     tracing::info!("新连接来自 {addr}");
     speed::tune_tcp(&stream)?;
 
@@ -547,7 +598,7 @@ pub async fn server_mux_session(
 
                         let w = writer.clone();
                         tokio::spawn(async move {
-                            let mut buf = vec![0u8; 262_144];
+                            let mut buf = vec![0u8; IO_BUF];
                             loop {
                                 match target_reader.read(&mut buf).await {
                                     Ok(0) | Err(_) => {
@@ -558,7 +609,7 @@ pub async fn server_mux_session(
                                     }
                                     Ok(n) => {
                                         let mut end = n;
-                                        while end < 240_000 {
+                                        while end < IO_BUF * 9 / 10 {
                                             match target_reader.try_read(&mut buf[end..]) {
                                                 Ok(0) => break,
                                                 Ok(n2) => end += n2,

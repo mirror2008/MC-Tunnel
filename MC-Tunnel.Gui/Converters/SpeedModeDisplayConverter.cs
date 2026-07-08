@@ -11,7 +11,8 @@ public sealed class SpeedModeDisplayConverter : IValueConverter
         {
             SpeedMode.Balanced => "均衡 Balanced",
             SpeedMode.Stealth => "隐蔽 Stealth",
-            _ => "极速 Fast",
+            SpeedMode.Fast => "快速 Fast",
+            _ => "极速 Turbo",
         } : "";
 
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
@@ -19,6 +20,7 @@ public sealed class SpeedModeDisplayConverter : IValueConverter
         {
             "均衡 Balanced" => SpeedMode.Balanced,
             "隐蔽 Stealth" => SpeedMode.Stealth,
-            _ => SpeedMode.Fast,
+            "快速 Fast" => SpeedMode.Fast,
+            _ => SpeedMode.Turbo,
         };
 }

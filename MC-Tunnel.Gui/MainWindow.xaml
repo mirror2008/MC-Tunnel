@@ -63,6 +63,7 @@
                                     <TextBlock Text="{Binding Converter={StaticResource SpeedDisplay}}"/>
                                 </DataTemplate>
                             </ComboBox.ItemTemplate>
+                            <models:SpeedMode>Turbo</models:SpeedMode>
                             <models:SpeedMode>Fast</models:SpeedMode>
                             <models:SpeedMode>Balanced</models:SpeedMode>
                             <models:SpeedMode>Stealth</models:SpeedMode>

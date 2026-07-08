@@ -18,7 +18,47 @@ public sealed class ConfigService
 
     public ConfigService()
     {
-        ConfigPath = Path.Combine(TunnelExeLocator.ConfigDirectory(), "mc-tunnel-config.json");
+        ConfigPath = ResolveConfigPath();
+    }
+
+    /// <summary>配置保存到 %AppData%\MC-Tunnel，换目录/更新版也能记住</summary>
+    public static string ResolveConfigPath()
+    {
+        var appDataDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "MC-Tunnel");
+        Directory.CreateDirectory(appDataDir);
+        var target = Path.Combine(appDataDir, "mc-tunnel-config.json");
+
+        if (File.Exists(target))
+            return target;
+
+        foreach (var legacy in LegacyConfigPaths())
+        {
+            if (!File.Exists(legacy))
+                continue;
+            try
+            {
+                File.Copy(legacy, target, overwrite: false);
+                return target;
+            }
+            catch
+            {
+                return legacy;
+            }
+        }
+
+        return target;
+    }
+
+    private static IEnumerable<string> LegacyConfigPaths()
+    {
+        yield return Path.Combine(TunnelExeLocator.ConfigDirectory(), "mc-tunnel-config.json");
+        var downloads = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            "Downloads");
+        yield return Path.Combine(downloads, "MC-Tunnel-Windows-x64", "mc-tunnel-config.json");
+        yield return Path.Combine(downloads, "MC-Tunnel-Windows-x64 (1)", "mc-tunnel-config.json");
     }
 
     public ClientConfig Load()
@@ -57,14 +97,16 @@ public sealed class ConfigService
     {
         "balanced" => SpeedMode.Balanced,
         "stealth" => SpeedMode.Stealth,
-        _ => SpeedMode.Fast,
+        "fast" => SpeedMode.Fast,
+        _ => SpeedMode.Turbo,
     };
 
     public static string SpeedToCli(SpeedMode speed) => speed switch
     {
         SpeedMode.Balanced => "balanced",
         SpeedMode.Stealth => "stealth",
-        _ => "fast",
+        SpeedMode.Fast => "fast",
+        _ => "turbo",
     };
 
     public static string ProxyModeToCli(ProxyMode mode) => mode switch

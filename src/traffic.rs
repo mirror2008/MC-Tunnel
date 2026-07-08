@@ -87,7 +87,10 @@ impl Default for TrafficCounter {
     }
 }
 
-pub async fn run_stats_server(counter: std::sync::Arc<TrafficCounter>) -> anyhow::Result<()> {
+pub async fn run_stats_server(
+    counter: std::sync::Arc<TrafficCounter>,
+    tunnel_alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> anyhow::Result<()> {
     use anyhow::Context;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -101,6 +104,7 @@ pub async fn run_stats_server(counter: std::sync::Arc<TrafficCounter>) -> anyhow
     loop {
         let (mut stream, _) = listener.accept().await?;
         let counter = counter.clone();
+        let tunnel_alive = tunnel_alive.clone();
         tokio::spawn(async move {
             let mut req = [0u8; 256];
             let n = stream.read(&mut req).await.unwrap_or(0);
@@ -109,9 +113,10 @@ pub async fn run_stats_server(counter: std::sync::Arc<TrafficCounter>) -> anyhow
 
             let (status, body) = if path == "/stats" || path.starts_with("/stats?") {
                 let s = counter.snapshot();
+                let alive = tunnel_alive.load(std::sync::atomic::Ordering::Acquire);
                 let body = format!(
-                    r#"{{"up_bps":{},"down_bps":{},"up_total":{},"down_total":{}}}"#,
-                    s.up_bps, s.down_bps, s.up_total, s.down_total
+                    r#"{{"up_bps":{},"down_bps":{},"up_total":{},"down_total":{},"tunnel_alive":{}}}"#,
+                    s.up_bps, s.down_bps, s.up_total, s.down_total, alive
                 );
                 ("200 OK", body)
             } else {

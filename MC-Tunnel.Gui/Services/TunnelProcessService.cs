@@ -43,6 +43,11 @@ public sealed class TunnelProcessService : IDisposable
         catch { /* ignore */ }
 
         KillByName("mc-tunnel");
+        try
+        {
+            RunSilent("powershell", "-NoProfile -Command \"Get-NetTCPConnection -LocalPort 25566 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }\"", 3000);
+        }
+        catch { /* ignore */ }
         Thread.Sleep(300);
     }
 
@@ -82,6 +87,8 @@ public sealed class TunnelProcessService : IDisposable
                 StandardOutputEncoding = Encoding.UTF8,
                 StandardErrorEncoding = Encoding.UTF8,
             };
+            psi.Environment["NO_COLOR"] = "1";
+            psi.Environment["RUST_LOG"] = "info";
 
             var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
             DataReceivedEventHandler onOut = (_, e) =>
@@ -154,7 +161,7 @@ public sealed class TunnelProcessService : IDisposable
 
             if (!proc.HasExited)
             {
-                // 勿杀 entireProcessTree：会连带 javaw 雷神中继，极易卡死
+                // 勿杀 entireProcessTree：会连带 javaw 中继，极易卡死
                 proc.Kill(entireProcessTree: false);
                 proc.WaitForExit(2000);
             }

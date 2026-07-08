@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using System.Windows;
 using MCTunnel.Gui.ViewModels;
 
@@ -29,7 +29,10 @@ public partial class MainWindow : Window
     protected override void OnClosing(CancelEventArgs e)
     {
         if (DataContext is MainViewModel vm)
+        {
+            vm.SaveAllSettings();
             vm.Dispose();
+        }
         base.OnClosing(e);
     }
 }

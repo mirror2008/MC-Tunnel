@@ -17,3 +17,5 @@ Thumbs.db
 *.suo
 .idea/
 .vs/
+deploy/_*.py
+deploy/_*.log

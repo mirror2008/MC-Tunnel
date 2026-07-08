@@ -17,6 +17,9 @@ public sealed class TrafficStatsDto
 
     [JsonPropertyName("down_total")]
     public long DownTotal { get; set; }
+
+    [JsonPropertyName("tunnel_alive")]
+    public bool TunnelAlive { get; set; } = true;
 }
 
 public sealed class TrafficStatsService : IDisposable

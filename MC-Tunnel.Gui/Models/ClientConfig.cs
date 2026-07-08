@@ -42,6 +42,7 @@ public enum ProxyMode
 
 public enum SpeedMode
 {
+    Turbo,
     Fast,
     Balanced,
     Stealth,

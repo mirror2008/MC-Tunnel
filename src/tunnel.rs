@@ -1,17 +1,18 @@
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
-use tokio::time::sleep;
+use tokio::time::{sleep, Instant};
 
 use crate::camouflage::{
     self, encode_tunnel_frame, parse_server_keepalive,
 };
 use crate::gameplay::{GameplaySimulator, ServerGameplay};
-use crate::speed::SpeedMode;
-
-const READ_BUF: usize = 262_144;
+use crate::speed::{SpeedMode, IO_BUF};
 
 enum WriteCmd {
     Tunnel(Vec<u8>),
@@ -22,49 +23,102 @@ enum WriteCmd {
 #[derive(Clone)]
 pub struct TunnelWriterHandle {
     tx: mpsc::UnboundedSender<WriteCmd>,
+    alive: Arc<AtomicBool>,
 }
 
 impl TunnelWriterHandle {
     pub fn spawn(writer: TunnelWriter) -> Self {
+        let alive = Arc::new(AtomicBool::new(true));
+        let alive_watch = alive.clone();
         let (tx, mut rx) = mpsc::unbounded_channel();
+
         tokio::spawn(async move {
             let mut writer = writer;
-            while let Some(cmd) = rx.recv().await {
-                match cmd {
-                    WriteCmd::Raw(data) => {
-                        if writer.write_raw(&data).await.is_err() {
-                            break;
-                        }
-                        while let Ok(WriteCmd::Raw(d)) = rx.try_recv() {
-                            if writer.write_raw(&d).await.is_err() {
-                                return;
+            let mut pending: Vec<u8> = Vec::new();
+            let mut flush_at: Option<Instant> = None;
+            const FLUSH_MS: u64 = 20;
+
+            loop {
+                let wait = flush_at
+                    .and_then(|t| t.checked_duration_since(Instant::now()))
+                    .unwrap_or(Duration::from_secs(3600));
+
+                tokio::select! {
+                    cmd = rx.recv() => {
+                        match cmd {
+                            None => break,
+                            Some(WriteCmd::Raw(data)) => {
+                                if !pending.is_empty() {
+                                    if writer.send_encoded_batch(&pending).await.is_err() { break; }
+                                    pending.clear();
+                                    flush_at = None;
+                                }
+                                if writer.write_raw(&data).await.is_err() { break; }
+                                while let Ok(WriteCmd::Raw(d)) = rx.try_recv() {
+                                    if writer.write_raw(&d).await.is_err() { break; }
+                                }
+                            }
+                            Some(WriteCmd::Tunnel(data)) => {
+                                pending.extend(encode_tunnel_frame(&data));
+                                let limit = writer.speed().write_batch_bytes();
+                                while pending.len() < limit {
+                                    match rx.try_recv() {
+                                        Ok(WriteCmd::Tunnel(d)) => {
+                                            pending.extend(encode_tunnel_frame(&d));
+                                        }
+                                        Ok(WriteCmd::Raw(raw)) => {
+                                            if !pending.is_empty() {
+                                                if writer.send_encoded_batch(&pending).await.is_err() { break; }
+                                                pending.clear();
+                                                flush_at = None;
+                                            }
+                                            if writer.write_raw(&raw).await.is_err() { break; }
+                                            continue;
+                                        }
+                                        Err(_) => break,
+                                    }
+                                }
+                                if pending.len() >= limit {
+                                    if writer.send_encoded_batch(&pending).await.is_err() { break; }
+                                    pending.clear();
+                                    flush_at = None;
+                                } else if !pending.is_empty() && flush_at.is_none() {
+                                    flush_at = Some(Instant::now() + Duration::from_millis(FLUSH_MS));
+                                }
                             }
                         }
                     }
-                    WriteCmd::Tunnel(data) => {
-                        let frame = encode_tunnel_frame(&data);
-                        if writer.send_encoded_frame(&frame).await.is_err() {
-                            break;
+                    _ = sleep(wait), if flush_at.is_some() => {
+                        if !pending.is_empty() {
+                            if writer.send_encoded_batch(&pending).await.is_err() { break; }
+                            pending.clear();
                         }
-                        while let Ok(WriteCmd::Tunnel(d)) = rx.try_recv() {
-                            let f = encode_tunnel_frame(&d);
-                            if writer.send_encoded_frame(&f).await.is_err() {
-                                return;
-                            }
-                        }
-                        while let Ok(WriteCmd::Raw(d)) = rx.try_recv() {
-                            if writer.write_raw(&d).await.is_err() {
-                                return;
-                            }
-                        }
+                        flush_at = None;
                     }
                 }
             }
+
+            if !pending.is_empty() {
+                let _ = writer.send_encoded_batch(&pending).await;
+            }
+            alive_watch.store(false, Ordering::Release);
         });
-        Self { tx }
+
+        Self { tx, alive }
+    }
+
+    pub fn alive_flag(&self) -> Arc<AtomicBool> {
+        self.alive.clone()
+    }
+
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Acquire)
     }
 
     pub async fn send(&self, data: &[u8]) -> anyhow::Result<()> {
+        if !self.is_alive() {
+            anyhow::bail!("隧道写入已停止");
+        }
         self.tx
             .send(WriteCmd::Tunnel(data.to_vec()))
             .map_err(|_| anyhow::anyhow!("隧道写入队列已关闭"))
@@ -75,6 +129,9 @@ impl TunnelWriterHandle {
     }
 
     pub async fn write_raw(&self, data: &[u8]) -> anyhow::Result<()> {
+        if !self.is_alive() {
+            anyhow::bail!("隧道写入已停止");
+        }
         self.tx
             .send(WriteCmd::Raw(data.to_vec()))
             .map_err(|_| anyhow::anyhow!("隧道写入队列已关闭"))
@@ -115,19 +172,21 @@ impl TunnelWriter {
         Ok(())
     }
 
-    async fn send_encoded_frame(&mut self, frame: &[u8]) -> anyhow::Result<()> {
-        let batch = self.simulator.embed_tunnel_batch(frame, self.speed);
+    pub async fn send_encoded_batch(&mut self, frames: &[u8]) -> anyhow::Result<()> {
+        if frames.is_empty() {
+            return Ok(());
+        }
+        let batch = self.simulator.embed_tunnel_batch(frames, self.speed);
         self.writer.write_all(&batch).await?;
         let delay = self.speed.post_batch_delay_ms();
         if delay > 0 {
-            sleep(std::time::Duration::from_millis(delay)).await;
+            sleep(Duration::from_millis(delay)).await;
         }
         Ok(())
     }
 
     pub async fn send(&mut self, data: &[u8]) -> anyhow::Result<()> {
-        let frame = encode_tunnel_frame(data);
-        self.send_encoded_frame(&frame).await
+        self.send_encoded_batch(&encode_tunnel_frame(data)).await
     }
 
     pub async fn send_server(&mut self, data: &[u8]) -> anyhow::Result<()> {
@@ -142,7 +201,7 @@ impl TunnelWriter {
         tokio::spawn(async move {
             let mut sim = GameplaySimulator::new();
             loop {
-                sleep(std::time::Duration::from_secs(interval)).await;
+                sleep(Duration::from_secs(interval)).await;
                 let decoy = sim.next_decoy_packet();
                 if handle.write_raw(&decoy).await.is_err() {
                     break;
@@ -156,7 +215,7 @@ impl TunnelReader {
     pub fn new(reader: OwnedReadHalf) -> Self {
         Self {
             reader,
-            read_buf: Vec::with_capacity(READ_BUF * 2),
+            read_buf: Vec::with_capacity(IO_BUF * 2),
             stego_chunks: Vec::new(),
             frame_queue: VecDeque::new(),
             simulator: GameplaySimulator::new(),
@@ -229,7 +288,7 @@ impl TunnelReader {
     }
 
     async fn read_more(&mut self) -> anyhow::Result<usize> {
-        let mut tmp = vec![0u8; READ_BUF];
+        let mut tmp = vec![0u8; IO_BUF];
         let n = self.reader.read(&mut tmp).await?;
         if n > 0 {
             self.read_buf.extend_from_slice(&tmp[..n]);
@@ -246,16 +305,16 @@ pub fn spawn_server_noise(handle: TunnelWriterHandle, reader_id: u64, speed: Spe
     tokio::spawn(async move {
         let mut server_sim = ServerGameplay::new();
         loop {
-            sleep(std::time::Duration::from_secs(interval)).await;
+            sleep(Duration::from_secs(interval)).await;
             let batch = server_sim.next_noise_batch();
             if batch.is_empty() {
                 continue;
             }
             if handle.write_raw(&batch).await.is_err() {
-                tracing::debug!("背景噪声任务结束 session={reader_id}");
-                return;
+                break;
             }
         }
+        let _ = reader_id;
     });
 }
 
@@ -263,7 +322,7 @@ pub fn spawn_client_keepalive(handle: TunnelWriterHandle) {
     tokio::spawn(async move {
         let mut sim = GameplaySimulator::new();
         loop {
-            sleep(std::time::Duration::from_secs(20)).await;
+            sleep(Duration::from_secs(10)).await;
             let pkt = sim.client_keepalive_probe();
             if handle.write_raw(&pkt).await.is_err() {
                 break;

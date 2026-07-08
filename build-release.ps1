@@ -32,7 +32,7 @@ Copy-Item -Force (Join-Path $root "target\release\mc-tunnel.exe") (Join-Path $re
 
 New-Item -ItemType Directory -Force -Path (Join-Path $release "data") | Out-Null
 Copy-Item -Force (Join-Path $root "data\Country.mmdb") (Join-Path $release "data\Country.mmdb") -ErrorAction SilentlyContinue
-if (-not (Test-Path (Join-Path $release "bridge\McLeigodBridge.class"))) {
+if (-not (Test-Path (Join-Path $release "bridge\McJavawBridge.class"))) {
     Copy-Item -Recurse -Force (Join-Path $root "bridge") (Join-Path $release "bridge")
 }
 
@@ -50,7 +50,7 @@ MC-Tunnel Windows Client
 
 1. Install .NET 9 Desktop Runtime (first time only):
    https://dotnet.microsoft.com/download/dotnet/9.0
-2. Start Leigod accelerator for Minecraft
+2. Start your game accelerator for Minecraft
 3. Run mc-tunnel-gui.exe
 4. Enter VPS address (IP:port); settings save to mc-tunnel-config.json
 

@@ -3,13 +3,14 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 use mc_tunnel::routing::{load_client_config, ProxyMode};
 use mc_tunnel::speed::SpeedMode;
-use mc_tunnel::{init_logging, run_client, run_server, stop_proxy};
+use mc_tunnel::{init_logging, probe_remote, run_client, run_server, stop_proxy};
 
 #[derive(Clone, ValueEnum, Debug)]
 enum SpeedArg {
     Stealth,
     Balanced,
     Fast,
+    Turbo,
 }
 
 impl From<SpeedArg> for SpeedMode {
@@ -18,6 +19,7 @@ impl From<SpeedArg> for SpeedMode {
             SpeedArg::Stealth => SpeedMode::Stealth,
             SpeedArg::Balanced => SpeedMode::Balanced,
             SpeedArg::Fast => SpeedMode::Fast,
+            SpeedArg::Turbo => SpeedMode::Turbo,
         }
     }
 }
@@ -69,6 +71,13 @@ enum Commands {
         speed: SpeedArg,
     },
     Stop,
+    /// 直连探测服务端 MC 握手（不经 MC 加速通道）
+    Probe {
+        #[arg(short, long)]
+        remote: String,
+        #[arg(short = 'S', long, value_enum, default_value_t = SpeedArg::Fast)]
+        speed: SpeedArg,
+    },
 }
 
 #[tokio::main]
@@ -101,5 +110,6 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Server { listen, speed } => run_server(&listen, speed.into()).await,
         Commands::Stop => stop_proxy(),
+        Commands::Probe { remote, speed } => probe_remote(&remote, speed.into()).await,
     }
 }
